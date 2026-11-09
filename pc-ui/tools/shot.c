@@ -6,7 +6,8 @@
 int main(void)
 {
     HWND win;
-    RECT wr;
+    RECT cr;
+    POINT pt;
     int ox = 0, oy = 0, w, h;
     HDC sdc;
     HDC mdc;
@@ -29,11 +30,14 @@ int main(void)
         // 截完再取消置顶，避免影响用户。
         SetWindowPos(win, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
         Sleep(150);
-        GetWindowRect(win, &wr);
-        ox = wr.left;
-        oy = wr.top;
-        w = wr.right - wr.left;
-        h = wr.bottom - wr.top;
+        GetClientRect(win, &cr);
+        pt.x = 0;
+        pt.y = 0;
+        ClientToScreen(win, &pt);
+        ox = pt.x;
+        oy = pt.y;
+        w = cr.right - cr.left;
+        h = cr.bottom - cr.top;
     } else {
         w = GetSystemMetrics(SM_CXSCREEN);
         h = GetSystemMetrics(SM_CYSCREEN);

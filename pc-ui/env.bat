@@ -2,6 +2,8 @@
 rem env.bat - locate MSVC and Windows SDK, set INCLUDE/LIB/PATH
 rem Do NOT call vcvars*.bat: it runs reg.exe, which restricted environments block.
 rem Keep this file ASCII-only: CJK text in a .bat can merge lines under codepage 936.
+rem If a build environment is already active, keep it.
+if defined VCToolsInstallDir exit /b 0
 
 set "VSROOT=%ProgramFiles%\Microsoft Visual Studio\2022\Community"
 if not exist "%VSROOT%\VC\Tools\MSVC" set "VSROOT=%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools"

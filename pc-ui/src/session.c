@@ -36,14 +36,15 @@ static void wcat(wchar_t* dst, const wchar_t* src)
     dst[i] = 0;
 }
 
-static int wsub(const wchar_t* s, const wchar_t* sub)
+static int port_number(const wchar_t* name)
 {
-    int i, j;
-    for (i = 0; s[i]; i++) {
-        for (j = 0; sub[j] && s[i + j] == sub[j]; j++) {}
-        if (!sub[j]) return 1;
+    int n = 0, i = 0;
+    while (name[i] && (name[i] < L'0' || name[i] > L'9')) i++;
+    while (name[i] >= L'0' && name[i] <= L'9') {
+        n = n * 10 + (name[i] - L'0');
+        i++;
     }
-    return 0;
+    return n;
 }
 
 static void msg_set(Session* s, const wchar_t* text)
@@ -81,13 +82,18 @@ static void redraw(Session* s)
 
 void session_init(Session* s, HWND hwnd)
 {
-    int i;
+    int i, best = -1;
     s->hwnd = hwnd;
     s->portCount = serial_io_enum(s->ports, 16);
     for (i = 0; i < s->portCount; i++) {
+        int num;
         s->portItems[i].label = s->ports[i];
         s->portItems[i].value = i;
-        if (wsub(s->ports[i], L"COM24")) s->portSel = i;
+        num = port_number(s->ports[i]);
+        if (num > best) {
+            best = num;
+            s->portSel = i;
+        }
     }
     msg_set(s, L"选择端口后点连接");
 }
