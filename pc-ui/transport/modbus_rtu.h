@@ -27,7 +27,9 @@ typedef struct {
     unsigned char slave;
     unsigned char func;
     unsigned short addr;
-    unsigned short count;   /* fc 03: register count; fc 06: value */
+    unsigned short count;           /* fc 03: register count; fc 06: value */
+    unsigned short values[4];       /* fc 16: values to write */
+    unsigned char nvalues;          /* fc 16: number of values */
 } MbRequest;
 
 typedef struct {

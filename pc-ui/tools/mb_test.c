@@ -62,6 +62,14 @@ static int fake_write(void* p, const unsigned char* buf, int len)
     } else if (buf[1] == 6) {
         for (i = 0; i < 8; i++) f->pending[i] = buf[i];
         f->len = 8;
+    } else if (buf[1] == 0x10) {
+        resp[0] = buf[0]; resp[1] = 0x10;
+        resp[2] = buf[2]; resp[3] = buf[3];
+        resp[4] = buf[4]; resp[5] = buf[5];
+        crc = mb_crc16(resp, 6);
+        resp[6] = (unsigned char)crc; resp[7] = (unsigned char)(crc >> 8);
+        for (i = 0; i < 8; i++) f->pending[i] = resp[i];
+        f->len = 8;
     }
     return len;
 }
@@ -167,6 +175,19 @@ static void test_parse(void)
         CHECK(mb_parse(buf, &n, 1, &r) == 1 && r.status == MB_STAT_OK &&
               r.values[0] == 1, "0x06 echo parsed");
     }
+    {
+        MbRequest q = {0};
+        unsigned char f[32];
+        unsigned char resp[8] = {0x01, 0x10, 0x00, 0x08, 0x00, 0x02, 0xC0, 0x0A};
+        q.slave = 1; q.func = 0x10; q.addr = 8;
+        q.nvalues = 2; q.values[0] = 12000; q.values[1] = 20000;
+        n = mb_build(&q, f, sizeof(f));
+        CHECK(n == 13 && f[6] == 4 && f[11] == 0xCE && f[12] == 0xAF,
+              "0x10 frame matches real device exchange");
+        n = 8;
+        CHECK(mb_parse(resp, &n, 1, &r) == 1 && r.status == MB_STAT_OK &&
+              r.func == 0x10 && r.values[0] == 2, "0x10 response parsed");
+    }
 }
 
 static void test_client(void)
@@ -243,6 +264,16 @@ static void test_client(void)
     mb_submit(c, &q2, &seq[2]);
     CHECK(wait_result(c, 2000, &r, &s) && s == seq[2] &&
           r.status == MB_STAT_OK, "request succeeds after reconnect");
+
+    {
+        MbRequest m = {0};
+        m.slave = 1; m.func = 0x10; m.addr = 8;
+        m.nvalues = 2; m.values[0] = 12000; m.values[1] = 20000;
+        mb_submit(c, &m, &seq[3]);
+        CHECK(wait_result(c, 2000, &r, &s) && s == seq[3] &&
+              r.status == MB_STAT_OK && r.func == 0x10 && r.values[0] == 2,
+              "0x10 write completes through client");
+    }
 
     mb_destroy(c);
 }

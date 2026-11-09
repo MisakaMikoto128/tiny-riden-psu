@@ -49,17 +49,38 @@ unsigned short mb_crc16(const unsigned char* d, int n)
 int mb_build(const MbRequest* r, unsigned char* out, int cap)
 {
     unsigned short crc;
-    if (cap < 8 || (r->func != 3 && r->func != 6)) return 0;
-    out[0] = r->slave;
-    out[1] = r->func;
-    out[2] = (unsigned char)(r->addr >> 8);
-    out[3] = (unsigned char)r->addr;
-    out[4] = (unsigned char)(r->count >> 8);
-    out[5] = (unsigned char)r->count;
-    crc = mb_crc16(out, 6);
-    out[6] = (unsigned char)crc;
-    out[7] = (unsigned char)(crc >> 8);
-    return 8;
+    int n, i;
+    if (r->func == 3 || r->func == 6) {
+        if (cap < 8) return 0;
+        out[0] = r->slave;
+        out[1] = r->func;
+        out[2] = (unsigned char)(r->addr >> 8);
+        out[3] = (unsigned char)r->addr;
+        out[4] = (unsigned char)(r->count >> 8);
+        out[5] = (unsigned char)r->count;
+        n = 6;
+    } else if (r->func == 0x10) {
+        if (r->nvalues < 1 || r->nvalues > 4) return 0;
+        n = 7 + r->nvalues * 2;
+        if (cap < n + 2) return 0;
+        out[0] = r->slave;
+        out[1] = 0x10;
+        out[2] = (unsigned char)(r->addr >> 8);
+        out[3] = (unsigned char)r->addr;
+        out[4] = 0;
+        out[5] = r->nvalues;
+        out[6] = (unsigned char)(r->nvalues * 2);
+        for (i = 0; i < r->nvalues; i++) {
+            out[7 + i * 2] = (unsigned char)(r->values[i] >> 8);
+            out[8 + i * 2] = (unsigned char)r->values[i];
+        }
+    } else {
+        return 0;
+    }
+    crc = mb_crc16(out, n);
+    out[n] = (unsigned char)crc;
+    out[n + 1] = (unsigned char)(crc >> 8);
+    return n + 2;
 }
 
 static void mb_drop(unsigned char* buf, int* len, int n)
@@ -153,7 +174,7 @@ static void push_result(MbClient* c, const MbResult* r, unsigned int seq)
 
 static void start_attempt(MbClient* c)
 {
-    unsigned char frame[8];
+    unsigned char frame[32];
     int n;
     c->rxlen = 0;
     c->io.purge(c->io.ctx);
@@ -182,6 +203,7 @@ void mb_feed(MbClient* c, const unsigned char* data, int len)
         }
         if (c->pending.func == 3 && r.count != c->pending.count) continue;
         if (c->pending.func == 6 && r.values[0] != c->pending.count) continue;
+        if (c->pending.func == 0x10 && r.values[0] != c->pending.nvalues) continue;
         push_result(c, &r, c->pending_seq);
         c->has_pending = 0;
     }
