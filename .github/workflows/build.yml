@@ -1,0 +1,44 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC x86
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x86
+
+      - name: Build application
+        working-directory: pc-ui
+        shell: cmd
+        run: build.bat
+
+      - name: Build verification tools
+        working-directory: pc-ui/tools
+        shell: cmd
+        run: build-tools.bat
+
+      - name: Run transport regression
+        working-directory: pc-ui/tools
+        shell: cmd
+        run: mb_test.exe
+
+      - name: Report artifact size
+        working-directory: pc-ui
+        shell: cmd
+        run: dir build\tinyapp.exe
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiny-riden-psu-x86
+          path: pc-ui/build/tinyapp.exe
+          if-no-files-found: error
