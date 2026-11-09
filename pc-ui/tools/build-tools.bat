@@ -25,5 +25,7 @@ cl /nologo /O1 /utf-8 live_test.c ..\transport\modbus_rtu.c ..\transport\serial_
 if errorlevel 1 exit /b 1
 cl /nologo /O1 /utf-8 rate_test.c ..\transport\modbus_rtu.c ..\transport\serial_io.c /Fe:rate_test.exe /Fo:..\build\tools\ kernel32.lib
 if errorlevel 1 exit /b 1
+cl /nologo /O1 /utf-8 plan_test.c ..\src\device.c ..\transport\modbus_rtu.c ..\transport\serial_io.c /Fe:plan_test.exe /Fo:..\build\tools\ kernel32.lib
+if errorlevel 1 exit /b 1
 
-echo [ok] tools\shot.exe tools\click.exe tools\keys.exe tools\mb_test.exe tools\live_test.exe tools\rate_test.exe
+echo [ok] tools\shot.exe tools\click.exe tools\keys.exe tools\mb_test.exe tools\live_test.exe tools\rate_test.exe tools\plan_test.exe
