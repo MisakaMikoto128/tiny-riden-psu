@@ -6,3 +6,6 @@ pc-ui/build/
 
 # 会话记忆（由 WorkBuddy 维护，不纳入版本库）
 .workbuddy/memory/
+
+# 技能分发副本，不纳入本仓库
+*.zip
