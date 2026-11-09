@@ -1,0 +1,8 @@
+# 构建产物
+pc-ui/build/
+*.obj
+*.exe
+*.bmp
+
+# 会话记忆（由 WorkBuddy 维护，不纳入版本库）
+.workbuddy/memory/
