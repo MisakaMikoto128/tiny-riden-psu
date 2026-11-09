@@ -1,134 +1,219 @@
-/* device.c - RD6012P 寄存器映射、量纲换算与受护栏的写操作。
-   保护阈值只在连接后读一次，状态按单帧连续轮询；写操作回读校验。
+/* device.c - RD6012P 动作计划执行器与量纲换算。
+   计划是有序步骤数组；状态刷新、批量写、输出开关共用同一个执行器。
    所有数值保持整数原始单位，显示时才切分小数位。 */
 #include "device.h"
 
-#define ST_IDLE    0
-#define ST_PROTECT 1
-#define ST_STATUS  2
-#define ST_WRITE   3
-#define ST_VERIFY  4
+#define DEV_SLAVE 1
 
-static int send_req(DevSession* s, int func, int addr, int count, int stage)
+static void apply_status(Device* d, const unsigned short* v)
 {
-    MbRequest q;
+    DevSnapshot* s = &d->snap;
+    s->model_id = v[0];
+    s->firmware = v[3];
+    s->temp_c = v[4] ? -(int)v[5] : (int)v[5];
+    s->v_set_mv = v[8];
+    s->i_set_raw = v[9];
+    s->v_out_mv = v[10];
+    s->i_out_raw = v[11];
+    s->v_in_cv = v[14];
+    s->lock = v[15];
+    s->protect = v[16];
+    s->mode_cc = v[17];
+    s->output = v[18];
+    s->preset = v[19];
+    s->range = v[20];
+    s->valid = 1;
+}
+
+static int dev_submit_step(Device* d, const DevStep* st)
+{
+    MbRequest q = {0};
+    int i;
     q.slave = DEV_SLAVE;
-    q.func = (unsigned char)func;
-    q.addr = (unsigned short)addr;
-    q.count = (unsigned short)count;
-    if (!mb_submit(s->mb, &q, &s->seq)) return 0;
-    s->stage = stage;
-    return 1;
+    q.func = st->func;
+    q.addr = st->addr;
+    q.count = st->count;
+    q.nvalues = st->nvalues;
+    for (i = 0; i < st->nvalues; i++) q.values[i] = st->values[i];
+    return mb_submit(d->mb, &q, &d->seq);
 }
 
-static void apply_status(DevSession* s, const unsigned short* v)
+static void dev_finish(Device* d)
 {
-    DevSnapshot* d = &s->snap;
-    d->model_id = v[0];
-    d->firmware = v[3];
-    d->temp_c = v[4] ? -(int)v[5] : (int)v[5];
-    d->v_set_mv = v[8];
-    d->i_set_raw = v[9];
-    d->v_out_mv = v[10];
-    d->i_out_raw = v[11];
-    d->v_in_cv = v[14];
-    d->lock = v[15];
-    d->protect = v[16];
-    d->mode_cc = v[17];
-    d->output = v[18];
-    d->preset = v[19];
-    d->range = v[20];
-    d->valid = 1;
+    d->plan.count = 0;
+    if (d->hasQueued) {
+        d->plan = d->queued;
+        d->plan.cursor = 0;
+        d->hasQueued = 0;
+        if (!dev_submit_step(d, &d->plan.steps[0])) d->plan.count = 0;
+    }
 }
 
-void dev_init(DevSession* s, MbClient* mb)
+static DevStatus dev_begin(Device* d, const DevPlan* p)
+{
+    if (dev_busy(d)) {
+        if (d->hasQueued) return DEV_BUSY;
+        d->queued = *p;
+        d->hasQueued = 1;
+        return DEV_OK;
+    }
+    d->plan = *p;
+    d->plan.cursor = 0;
+    if (!dev_submit_step(d, &d->plan.steps[0])) {
+        d->plan.count = 0;
+        return DEV_BUSY;
+    }
+    return DEV_OK;
+}
+
+void dev_init(Device* d, MbClient* mb)
 {
     int i;
-    unsigned char* p = (unsigned char*)s;
-    for (i = 0; i < (int)sizeof(DevSession); i++) p[i] = 0;
-    s->mb = mb;
+    unsigned char* p = (unsigned char*)d;
+    for (i = 0; i < (int)sizeof(Device); i++) p[i] = 0;
+    d->mb = mb;
 }
 
-int dev_busy(const DevSession* s)
+int dev_busy(const Device* d)
 {
-    return s->stage != ST_IDLE;
+    return d->plan.count > 0;
 }
 
-DevStatus dev_refresh(DevSession* s)
+void dev_tick(Device* d)
 {
-    if (s->stage != ST_IDLE) return DEV_BUSY;
-    if (!s->snap.valid) {
-        if (!send_req(s, 3, 0, 21, ST_STATUS)) return DEV_BUSY;
-    } else if (!s->protectRead) {
-        if (!send_req(s, 3, 80, 4, ST_PROTECT)) return DEV_BUSY;
+    DevPlan p = {0};
+    if (dev_busy(d) || d->hasQueued) return;
+    p.count = 1;
+    p.steps[0].func = 3;
+    if (!d->snap.valid || d->protectRead) {
+        p.steps[0].addr = 0;
+        p.steps[0].count = 21;
     } else {
-        if (!send_req(s, 3, 0, 21, ST_STATUS)) return DEV_BUSY;
+        p.steps[0].addr = 80;
+        p.steps[0].count = 4;
     }
-    return DEV_OK;
+    dev_begin(d, &p);
 }
 
-DevStatus dev_write(DevSession* s, int reg, int value)
-{
-    int max_i;
-    if (s->stage != ST_IDLE) return DEV_BUSY;
-    if (!s->snap.valid) return DEV_LINK;
-
-    if (reg == DEV_REG_V_SET) {
-        if (value < 0 || value > DEV_V_MAX_MV) return DEV_OUT_OF_RANGE;
-        if (s->protectRead && value > s->snap.ovp_mv) return DEV_OVER_OVP;
-        if (s->snap.output) return DEV_OUTPUT_ON;
-    } else if (reg == DEV_REG_I_SET) {
-        max_i = (s->snap.range == 1) ? DEV_I_MAX_12A : DEV_I_MAX_6A;
-        if (value <= 0 || value > max_i) return DEV_OUT_OF_RANGE;
-        if (s->snap.output) return DEV_OUTPUT_ON;
-    } else if (reg == DEV_REG_OUTPUT) {
-        if (value != 0 && value != 1) return DEV_OUT_OF_RANGE;
-    } else {
-        return DEV_OUT_OF_RANGE;
-    }
-
-    s->wreg = (unsigned short)reg;
-    s->wval = (unsigned short)value;
-    if (!send_req(s, 6, reg, value, ST_WRITE)) return DEV_BUSY;
-    return DEV_OK;
-}
-
-void dev_poll(DevSession* s)
+int dev_on_result(Device* d)
 {
     MbResult r;
     unsigned int seq;
-    int stage;
-    if (!mb_take(s->mb, &r, &seq)) return;
-    if (seq != s->seq) return;
-    stage = s->stage;
-    s->stage = ST_IDLE;
+    DevStep* st;
+    int i;
+    if (!mb_take(d->mb, &r, &seq)) return 0;
+    if (seq != d->seq || !d->plan.count) return 1;
+    st = &d->plan.steps[d->plan.cursor];
 
-    if (r.status == MB_ERR_TIMEOUT) { s->last = DEV_TIMEOUT; return; }
-    if (r.status == MB_ERR_EXCEPTION) { s->last = DEV_EXCEPTION; return; }
-    if (r.status != MB_STAT_OK) { s->last = DEV_LINK; return; }
+    if (r.status == MB_ERR_TIMEOUT) { d->last = DEV_TIMEOUT; dev_finish(d); return 1; }
+    if (r.status == MB_ERR_EXCEPTION) { d->last = DEV_EXCEPTION; dev_finish(d); return 1; }
+    if (r.status != MB_STAT_OK) { d->last = DEV_LINK; dev_finish(d); return 1; }
+    if (r.func != st->func) { d->last = DEV_MISMATCH; dev_finish(d); return 1; }
 
-    if (stage == ST_PROTECT) {
-        if (r.count != 4) { s->last = DEV_MISMATCH; return; }
-        s->snap.ovp_mv = r.values[2];
-        s->snap.ocp_raw = r.values[3];
-        s->protectRead = 1;
-        s->last = DEV_OK;
-        return;
-    }
-    if (stage == ST_STATUS || stage == ST_VERIFY) {
-        if (r.count != 21) { s->last = DEV_MISMATCH; return; }
-        apply_status(s, r.values);
-        if (stage == ST_VERIFY && r.values[s->wreg] != s->wval) {
-            s->last = DEV_MISMATCH;
-            return;
+    if (st->func == 3 && st->addr == 0) {
+        if (r.count != 21) { d->last = DEV_MISMATCH; dev_finish(d); return 1; }
+        apply_status(d, r.values);
+        for (i = 0; i < d->plan.verifyCount; i++) {
+            if (r.values[d->plan.verifyReg[i]] != d->plan.verifyVal[i]) {
+                d->last = DEV_MISMATCH;
+                dev_finish(d);
+                return 1;
+            }
         }
-        s->last = DEV_OK;
-        return;
+    } else if (st->func == 3 && st->addr == 80) {
+        if (r.count != 4) { d->last = DEV_MISMATCH; dev_finish(d); return 1; }
+        d->snap.ovp_mv = r.values[2];
+        d->snap.ocp_raw = r.values[3];
+        d->protectRead = 1;
     }
-    if (stage == ST_WRITE) {
-        if (r.func != 6 || r.values[0] != s->wval) { s->last = DEV_MISMATCH; return; }
-        if (!send_req(s, 3, 0, 21, ST_VERIFY)) s->last = DEV_BUSY;
+
+    d->plan.cursor++;
+    if (d->plan.cursor >= d->plan.count) {
+        d->last = DEV_OK;
+        dev_finish(d);
+    } else if (!dev_submit_step(d, &d->plan.steps[d->plan.cursor])) {
+        d->plan.count = 0;
     }
+    return 1;
+}
+
+DevStatus dev_status(Device* d)
+{
+    DevPlan p = {0};
+    p.count = 1;
+    p.steps[0].func = 3;
+    p.steps[0].addr = 0;
+    p.steps[0].count = 21;
+    return dev_begin(d, &p);
+}
+
+DevStatus dev_protect(Device* d)
+{
+    DevPlan p = {0};
+    p.count = 1;
+    p.steps[0].func = 3;
+    p.steps[0].addr = 80;
+    p.steps[0].count = 4;
+    return dev_begin(d, &p);
+}
+
+DevStatus dev_set(Device* d, int v_mv, int i_raw)
+{
+    DevPlan p = {0};
+    DevStep* w;
+    int max_i;
+    if (!d->snap.valid) return DEV_LINK;
+    if (d->snap.output) return DEV_OUTPUT_ON;
+    if (v_mv < 0 || v_mv > DEV_V_MAX_MV) return DEV_OUT_OF_RANGE;
+    if (d->protectRead && v_mv > d->snap.ovp_mv) return DEV_OVER_OVP;
+    max_i = d->snap.range ? DEV_I_MAX_12A : DEV_I_MAX_6A;
+    if (i_raw <= 0 || i_raw > max_i) return DEV_OUT_OF_RANGE;
+
+    w = &p.steps[0];
+    w->func = 0x10;
+    if (v_mv != d->snap.v_set_mv && i_raw != d->snap.i_set_raw) {
+        w->addr = 8;
+        w->nvalues = 2;
+        w->values[0] = (unsigned short)v_mv;
+        w->values[1] = (unsigned short)i_raw;
+        p.verifyReg[0] = 8; p.verifyVal[0] = (unsigned short)v_mv;
+        p.verifyReg[1] = 9; p.verifyVal[1] = (unsigned short)i_raw;
+        p.verifyCount = 2;
+    } else if (v_mv != d->snap.v_set_mv) {
+        w->addr = 8;
+        w->nvalues = 1;
+        w->values[0] = (unsigned short)v_mv;
+        p.verifyReg[0] = 8; p.verifyVal[0] = (unsigned short)v_mv;
+        p.verifyCount = 1;
+    } else {
+        w->addr = 9;
+        w->nvalues = 1;
+        w->values[0] = (unsigned short)i_raw;
+        p.verifyReg[0] = 9; p.verifyVal[0] = (unsigned short)i_raw;
+        p.verifyCount = 1;
+    }
+    p.steps[1].func = 3;
+    p.steps[1].addr = 0;
+    p.steps[1].count = 21;
+    p.count = 2;
+    return dev_begin(d, &p);
+}
+
+DevStatus dev_output(Device* d, int on)
+{
+    DevPlan p = {0};
+    if (!d->snap.valid) return DEV_LINK;
+    p.steps[0].func = 6;
+    p.steps[0].addr = 18;
+    p.steps[0].count = (unsigned short)on;
+    p.steps[1].func = 3;
+    p.steps[1].addr = 0;
+    p.steps[1].count = 21;
+    p.verifyReg[0] = 18;
+    p.verifyVal[0] = (unsigned short)on;
+    p.verifyCount = 1;
+    p.count = 2;
+    return dev_begin(d, &p);
 }
 
 int dev_i_scale(int range)

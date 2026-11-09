@@ -1,20 +1,16 @@
-/* device.h - RD6012P 寄存器映射、量纲换算与受护栏的写操作。
-   状态快照与事务阶段由本层持有，UI 只读快照并发起动作。
-   允许写入的寄存器只有设定电压、设定电流、输出使能。 */
+/* device.h - RD6012P 寄存器换算与动作计划执行器。
+   真实快照与当前计划由本层持有，调用方只读快照、只提交计划。
+   一个计划内步骤严格串行，同一时刻只有一个未完成请求。 */
 #ifndef DEVICE_H
 #define DEVICE_H
 
 #include "../transport/modbus_rtu.h"
 
-#define DEV_SLAVE 1
-#define DEV_REG_V_SET 8
-#define DEV_REG_I_SET 9
-#define DEV_REG_OUTPUT 18
-#define DEV_REG_M0_OVP 82
-
 #define DEV_V_MAX_MV   60000
 #define DEV_I_MAX_6A   62000
 #define DEV_I_MAX_12A  12000
+#define DEV_MAX_STEPS  3
+#define DEV_MAX_VALUES 2
 
 typedef enum {
     DEV_OK = 0,
@@ -38,20 +34,41 @@ typedef struct {
 } DevSnapshot;
 
 typedef struct {
+    unsigned char func;
+    unsigned short addr;
+    unsigned short count;
+    unsigned short values[DEV_MAX_VALUES];
+    unsigned char nvalues;
+} DevStep;
+
+typedef struct {
+    DevStep steps[DEV_MAX_STEPS];
+    int count;
+    int cursor;
+    unsigned char verifyCount;
+    unsigned short verifyReg[DEV_MAX_VALUES];
+    unsigned short verifyVal[DEV_MAX_VALUES];
+} DevPlan;
+
+typedef struct {
     MbClient* mb;
     DevSnapshot snap;
-    int stage;
+    DevPlan plan;
+    DevPlan queued;
+    int hasQueued;
     int protectRead;
     unsigned int seq;
-    unsigned short wreg, wval;
     DevStatus last;
-} DevSession;
+} Device;
 
-void dev_init(DevSession* s, MbClient* mb);
-int  dev_busy(const DevSession* s);
-void dev_poll(DevSession* s);
-DevStatus dev_refresh(DevSession* s);
-DevStatus dev_write(DevSession* s, int reg, int value);
+void dev_init(Device* d, MbClient* mb);
+int  dev_busy(const Device* d);
+void dev_tick(Device* d);
+int  dev_on_result(Device* d);
+DevStatus dev_status(Device* d);
+DevStatus dev_protect(Device* d);
+DevStatus dev_set(Device* d, int v_mv, int i_raw);
+DevStatus dev_output(Device* d, int on);
 
 int  dev_i_scale(int range);
 unsigned long dev_power_centiw(const DevSnapshot* s);
