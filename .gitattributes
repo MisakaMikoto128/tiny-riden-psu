@@ -1,0 +1,9 @@
+# 源码与脚本文本统一以 LF 入库
+* text=auto eol=lf
+
+# Windows 批处理必须是 CRLF，且只含 ASCII
+*.bat text eol=crlf
+
+*.png binary
+*.bmp binary
+*.zip binary
